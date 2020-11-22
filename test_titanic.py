@@ -1,6 +1,7 @@
 from main import HyperEnsamble
 import pandas as pd
 import numpy as np
+import main
 
 def test_titanic():
     TRAIN = 600
@@ -25,4 +26,5 @@ def test_titanic():
     print("final validation:",validation_error)
     assert validation_error < -0.75
 
-    
+if __name__=="__main__":
+    test_titanic()

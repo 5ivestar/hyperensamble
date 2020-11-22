@@ -76,6 +76,28 @@ class KnnConf(ModelConf):
     def instance(self, param):
         return KNeighborsClassifier(**param)
 
+from sklearn.svm import SVC
+class SvmConf(ModelConf):
+    param_space = {
+        'C': hp.uniform('C', 0.1, 2.0),
+        'kernel': hp.choice('kernel', ['linear', 'poly', 'rbf', 'sigmoid']),
+        'degree': scope.int(hp.quniform('degree', 2, 5, 1)),
+        'gamma': hp.choice('gamma', ['auto', 'scale']),
+        'tol': hp.loguniform('tol', np.log(1e-5), np.log(1e-2)),
+        'max_iter': scope.int(hp.quniform('max_iter', -1, 100, 1))
+    }
+    name = "svm_classifier"
+    def instance(self, param):
+        return SVC(**param)
+
+from sklearn.naive_bayes import GaussianNB
+class NaiveBayseConf(ModelConf):
+    param_space = {
+    }
+    name = "naive_bayse"
+    def instance(self, param):
+        return GaussianNB(**param)
+
 class LinearRegressionConf(ModelConf):
     param_space = {}
 
@@ -91,7 +113,7 @@ class HyperEnsamble:
         if model_confs:
             self.model_confs = model_confs
         else:
-            self.model_confs = [XgbConf, LgbmConf, LogisticConf, RandomForestConf, KnnConf]
+            self.model_confs = [XgbConf, LgbmConf, LogisticConf, RandomForestConf, KnnConf, SvmConf, NaiveBayseConf]
         self.error_func = error_func
         self.trial = trial
         self.pred_type = pred_type
@@ -113,22 +135,27 @@ class HyperEnsamble:
             #print(self.error_func(tr_y,model.predict(tr_x)))
             #print(self.error_func(va_y,prediction))
         predictions = np.hstack(predictions)
-        score = self.error_func(y, predictions)
-        history.append((score, params, predictions))
-        return {"loss":score,"status": STATUS_OK}
+        error = self.error_func(y, predictions)
+        history.append((error, params, predictions))
+        return {"loss":error,"status": STATUS_OK}
         
     def find_best_models(self):
         self.best_model_params = []
         self.best_model_predictions = []
         for model_conf in self.model_confs:
+            print("Start training...", model_conf.name)
             # find best params
             history = []
-            def score(params):
-                return self.cvtrain(params, model_conf(self.pred_type), history, self.train, self.target)
-            fmin(score, model_conf.param_space, algo=tpe.suggest, trials=Trials(), max_evals=self.trial)
+            if model_conf.param_space: #TODO check if param_space contains hyperopt's variable
+                def score(params):
+                    return self.cvtrain(params, model_conf(self.pred_type), history, self.train, self.target)
+                fmin(score, model_conf.param_space, algo=tpe.suggest, trials=Trials(), max_evals=self.trial)
+            else:
+                self.cvtrain(model_conf.param_space, model_conf(self.pred_type), history, self.train, self.target)
             
             # retrain with best model
-            score, best_param, predictions = max(history, key=lambda x:x[0])
+            error, best_param, predictions = max(history, key=lambda x:x[0])
+            print(model_conf.name, "best error: ", error)
             self.best_model_predictions.append(predictions)
             self.best_model_params.append(best_param)
     
