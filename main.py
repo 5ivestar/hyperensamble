@@ -154,7 +154,7 @@ class HyperEnsamble:
                 self.cvtrain(model_conf.param_space, model_conf(self.pred_type), history, self.train, self.target)
             
             # retrain with best model
-            error, best_param, predictions = max(history, key=lambda x:x[0])
+            error, best_param, predictions = min(history, key=lambda x:x[0])
             print(model_conf.name, "best error: ", error)
             self.best_model_predictions.append(predictions)
             self.best_model_params.append(best_param)
