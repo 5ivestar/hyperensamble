@@ -12,13 +12,17 @@ def test_titanic():
     train = train.fillna(train.mean())
     train = pd.get_dummies(train, dummy_na=True)
 
-    # define 
+    # define loss function
     from sklearn.metrics import accuracy_score
     def accuracy_error_func(y_true, y_pred):
         y_pred = np.array([1 if y > 0.5 else 0 for y in y_pred])
         return -accuracy_score(y_true, y_pred)
         
-    he = HyperEnsamble(train[:TRAIN],target[:TRAIN], accuracy_error_func,None, trial=10)
+    he = HyperEnsamble(train[:TRAIN],target[:TRAIN], accuracy_error_func,None, trial=5)
     he.find_best_models()
     assert he.find_best_ensamble() < -0.75
+    validation_error = accuracy_error_func(target[TRAIN:],he.predict(train[TRAIN:]))
+    print("final validation:",validation_error)
+    assert validation_error < -0.75
+
     

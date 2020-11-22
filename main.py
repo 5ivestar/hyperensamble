@@ -110,7 +110,7 @@ class HyperEnsamble:
         return {"loss":score,"status": STATUS_OK}
         
     def find_best_models(self):
-        self.best_models = []
+        self.best_model_params = []
         self.best_model_predictions = []
         for model_conf in self.model_confs:
             # find best params
@@ -122,11 +122,11 @@ class HyperEnsamble:
             # retrain with best model
             score, best_param, predictions = max(history, key=lambda x:x[0])
             self.best_model_predictions.append(predictions)
-            self.best_models.append(best_param)
+            self.best_model_params.append(best_param)
     
     def find_best_ensamble(self):
         history = []
-        num_models = len(self.best_models)
+        num_models = len(self.best_model_params)
         best_meta_model = float("inf"), -1
         meta_model_conf = LogisticConf
         for i in range(2**num_models + 1, 2**(num_models+1)):
@@ -141,13 +141,18 @@ class HyperEnsamble:
         selected = np.column_stack([self.best_model_predictions[mid] for mid in range(num_models) if mid in self.selected_model_id])
         self.best_meta_model = LinearRegression()
         self.best_meta_model.fit(selected, self.target) 
+        self.best_models = []
+        for mid in self.selected_model_id:
+            best_model = self.model_confs[mid](self.pred_type).instance(self.best_model_params[mid])
+            best_model.fit(self.train, self.target)
+            self.best_models.append(best_model)
         print("ensamble weight")
         for i,mid in enumerate(sorted(self.selected_model_id)):
             print(self.model_confs[mid].name, self.best_meta_model.coef_[i])
         return best_loss
     
     def predict(self, x):
-        best_model_prediction = np.column_stack([model.predict(x) for i, model in enumerate(self.best_meta_model) if i in self.selected_model_id])
+        best_model_prediction = np.column_stack([model.predict(x.values) for i, model in enumerate(self.best_models)])
         return self.best_meta_model.predict(best_model_prediction)
 
 
