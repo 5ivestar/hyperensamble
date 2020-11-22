@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from hyperopt import fmin,tpe,hp,STATUS_OK,Trials
+from hyperopt.pyll import scope
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LinearRegression
 import sklearn.utils
@@ -17,10 +18,10 @@ class ModelConf:
 import xgboost as xgb
 class XgbConf(ModelConf):
     param_space = {
-        'learning_rate':    hp.choice('learning_rate',    np.arange(0.05, 0.31, 0.05)),
-        'max_depth':        hp.choice('max_depth',        np.arange(5, 16, 1, dtype=int)),
-        'min_child_weight': hp.choice('min_child_weight', np.arange(1, 8, 1, dtype=int)),
-        'colsample_bytree': hp.choice('colsample_bytree', np.arange(0.3, 0.8, 0.1)),
+        'learning_rate':    hp.quniform('learning_rate', 0.05, 0.31, 0.05),
+        'max_depth':        scope.int(hp.quniform('max_depth', 5, 16, 1)),
+        'min_child_weight': hp.quniform('min_child_weight', 1, 8, 1),
+        'colsample_bytree': hp.quniform('colsample_bytree', 0.3, 0.8, 0.1),
         'subsample':        hp.uniform('subsample', 0.8, 1),
         'n_estimators':     100,
     }
@@ -31,9 +32,9 @@ class XgbConf(ModelConf):
 from sklearn.ensemble.forest import RandomForestClassifier
 class RandomForestConf(ModelConf):
     param_space = {
-        'max_depth': hp.choice('max_depth', range(1,20)),
-        'max_features': hp.choice('max_features', range(1,150)),
-        'n_estimators': hp.choice('n_estimators', range(100,500)),
+        'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
+        'max_features': scope.int(hp.quniform('max_features', 1, 150, 1)),
+        'n_estimators': scope.int(hp.quniform('n_estimators', 100, 500, 1)),
         'criterion': hp.choice('criterion', ["gini", "entropy"])
     }
     name = "random_forest"
@@ -44,10 +45,10 @@ class RandomForestConf(ModelConf):
 import lightgbm as lgbm
 class LgbmConf(ModelConf):
     param_space = {
-        'learning_rate':    hp.choice('learning_rate',    np.arange(0.05, 0.31, 0.05)),
-        'max_depth':        hp.choice('max_depth',        np.arange(5, 16, 1, dtype=int)),
-        'min_child_weight': hp.choice('min_child_weight', np.arange(1, 8, 1, dtype=int)),
-        'colsample_bytree': hp.choice('colsample_bytree', np.arange(0.3, 0.8, 0.1)),
+        'learning_rate':    hp.quniform('learning_rate',0.05, 0.31, 0.05),
+        'max_depth':        scope.int(hp.quniform('max_depth', 5, 16, 1)),
+        'min_child_weight': hp.quniform('min_child_weight', 1, 8, 1),
+        'colsample_bytree': hp.quniform('colsample_bytree', 0.3, 0.8, 0.1),
         'subsample':        hp.uniform('subsample', 0.8, 1),
         'n_estimators':     100,
     }
@@ -66,7 +67,14 @@ class LogisticConf(ModelConf):
     def instance(self, param):
         return LogisticRegression(**param)
 
-
+from sklearn.neighbors import KNeighborsClassifier
+class KnnConf(ModelConf):
+    param_space = {
+        "n_neighbors": scope.int(hp.quniform("n_neighbors", 1, 50, 1))
+    }
+    name = "kneibors_classifier"
+    def instance(self, param):
+        return KNeighborsClassifier(**param)
 
 class LinearRegressionConf(ModelConf):
     param_space = {}
@@ -83,7 +91,7 @@ class HyperEnsamble:
         if model_confs:
             self.model_confs = model_confs
         else:
-            self.model_confs = [XgbConf, LgbmConf, LogisticConf, RandomForestConf]
+            self.model_confs = [XgbConf, LgbmConf, LogisticConf, RandomForestConf, KnnConf]
         self.error_func = error_func
         self.trial = trial
         self.pred_type = pred_type
@@ -134,7 +142,7 @@ class HyperEnsamble:
             result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target)
             best_meta_model = min((result["loss"], i), best_meta_model) 
         best_loss, selected_bit = best_meta_model
-        print("best stacking model loss: ", best_loss)
+        print("###best stacking model loss: ", best_loss)
 
         # retrain with best meta model
         self.selected_model_id = {mid for mid in range(num_models) if bin(selected_bit)[2:][mid] == "1"}
@@ -146,7 +154,7 @@ class HyperEnsamble:
             best_model = self.model_confs[mid](self.pred_type).instance(self.best_model_params[mid])
             best_model.fit(self.train, self.target)
             self.best_models.append(best_model)
-        print("ensamble weight")
+        print("###ensamble weight")
         for i,mid in enumerate(sorted(self.selected_model_id)):
             print(self.model_confs[mid].name, self.best_meta_model.coef_[i])
         return best_loss
