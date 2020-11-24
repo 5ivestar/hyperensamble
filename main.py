@@ -5,7 +5,9 @@ from hyperopt.pyll import scope
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LinearRegression
 import sklearn.utils
-
+import os
+import glob
+import hashlib
 
 class ModelConf:
     
@@ -117,24 +119,30 @@ class HyperEnsamble:
         self.error_func = error_func
         self.trial = trial
         self.pred_type = pred_type
+        self.mh = ModelHistory()
+        self.train_hash, self.target_hash = self.mh.cacl_pd_hash(train, self.target)
+        self.mh.may_store_feature(train, self.train_hash)
         #TODO need to consider shuffle for time
         self.train, self.target = sklearn.utils.shuffle(self.train, self.target, random_state=41)
 
-    def cvtrain(self, params, model_conf, history, x, y):
+    def cvtrain(self, params, model_conf, history, x, y, load=True):
         model = model_conf.instance(params)
         kf=KFold(n_splits=2)
         errors=[]
         train_results=[]
-        predictions = []
-        for tr_idx,va_idx in kf.split(x):
-            tr_x, va_x = x[tr_idx], x[va_idx]
-            tr_y, va_y = y[tr_idx], y[va_idx]
-            model.fit(tr_x, tr_y)
-            prediction = model.predict(va_x)
-            predictions.append(prediction)
-            #print(self.error_func(tr_y,model.predict(tr_x)))
-            #print(self.error_func(va_y,prediction))
-        predictions = np.hstack(predictions)
+        predictions = self.mh.load_past_model_cv(self.train_hash, params, model_conf.name) if load else None
+        if predictions is None:
+            predictions = []
+            for tr_idx,va_idx in kf.split(x):
+                tr_x, va_x = x[tr_idx], x[va_idx]
+                tr_y, va_y = y[tr_idx], y[va_idx]
+                model.fit(tr_x, tr_y)
+                prediction = model.predict(va_x)
+                predictions.append(prediction)
+                #print(self.error_func(tr_y,model.predict(tr_x)))
+                #print(self.error_func(va_y,prediction))
+            predictions = np.hstack(predictions)
+            self.mh.may_save_model_cv(self.train_hash, params, model_conf.name, predictions)
         error = self.error_func(y, predictions)
         history.append((error, params, predictions))
         return {"loss":error,"status": STATUS_OK}
@@ -149,7 +157,7 @@ class HyperEnsamble:
             if model_conf.param_space: #TODO check if param_space contains hyperopt's variable
                 def score(params):
                     return self.cvtrain(params, model_conf(self.pred_type), history, self.train, self.target)
-                fmin(score, model_conf.param_space, algo=tpe.suggest, trials=Trials(), max_evals=self.trial)
+                fmin(score, model_conf.param_space, algo=tpe.suggest, trials=Trials(), max_evals=self.trial, rstate=np.random.RandomState(42))
             else:
                 self.cvtrain(model_conf.param_space, model_conf(self.pred_type), history, self.train, self.target)
             
@@ -166,7 +174,7 @@ class HyperEnsamble:
         meta_model_conf = LogisticConf
         for i in range(2**num_models + 1, 2**(num_models+1)):
             selected = np.column_stack([self.best_model_predictions[mid] for mid in range(num_models) if bin(i)[2:][mid] == "1"])
-            result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target)
+            result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target,load=False)
             best_meta_model = min((result["loss"], i), best_meta_model) 
         best_loss, selected_bit = best_meta_model
         print("###best stacking model loss: ", best_loss)
@@ -186,8 +194,69 @@ class HyperEnsamble:
             print(self.model_confs[mid].name, self.best_meta_model.coef_[i])
         return best_loss
     
+    # def find_bigensamble():
+    #     model_list = self.mh.get_all_model()
+    
     def predict(self, x):
         best_model_prediction = np.column_stack([model.predict(x.values) for i, model in enumerate(self.best_models)])
         return self.best_meta_model.predict(best_model_prediction)
 
+import pickle
+import hashlib
+class ModelHistory:
+    path_root = "model_history"
+    path_feature = path_root + "/features"
+    path_model = path_root + "/models"
+    path_exec_record = path_root + "/exec_records"
+    base = 10**9 + 7
 
+    def __init__(self):
+        for path in [self.path_feature, self.path_model, self.path_exec_record]:
+            if not os.path.exists(path):
+                os.makedirs(path)
+
+    def cacl_pd_hash(self, train, target):
+        train_hash = str(myhash(train.columns.tolist()) + len(train))
+        target_hash = str(abs(sum(target) + len(target.shape)))
+        return train_hash, target_hash
+
+    def may_store_feature(self, train, train_hash):
+        if os.path.exists(train_hash):
+            return
+        train.to_csv(self.path_feature + "/" + train_hash, compression="gzip")
+    
+    def load_past_model_cv(self, train_hash, params, model_name):
+        model_path = self.get_model_path(train_hash, params,model_name)
+        if os.path.exists(model_path):
+            return np.load(model_path + "/cv_result.npy")
+        return None
+
+    def load_past_model_object(self,model_path):
+        if os.path.exists(model_path):
+            return pickle.load(model_path + "/model_object")
+        return None
+    
+    def may_save_model_cv(self, train_hash, params, model_name, cv_result):
+        model_path = self.get_model_path(train_hash, params, model_name)
+        if os.path.exists(model_path):
+            return
+        os.makedirs(model_path)
+        np.save(model_path + "/cv_result",cv_result)
+
+    def get_model_path(self, train_hash, params, model_name):
+        param_hash = str(myhash(params))
+        model_path = self.path_model + "/" + model_name + "_" + train_hash + "_" + param_hash
+        return model_path
+
+    def get_all_model(self):
+        return [os.path.abspath(p) for p in glob.glob(self.path_model)]
+
+def myhash(s):
+    if type(s) == str:
+        return int(hashlib.sha1(s.encode("utf-8")).hexdigest(),16) % 10**8
+    elif isinstance(s, list) or isinstance(s, tuple):
+        return sum(myhash(e) for e in s) % 10**8
+    elif isinstance(s, dict):
+        return sum(myhash(k) * 10**4 + 7 + myhash(v) for k,v in s.items()) % 10**8
+    else:
+        return int(s) % 10**8
