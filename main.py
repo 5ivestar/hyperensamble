@@ -107,7 +107,7 @@ class LinearRegressionConf(ModelConf):
         return LinearRegression(normalize=True)
 
 class HyperEnsamble:
-    def __init__(self, train, target, error_func, pred_type, trial=10, model_confs=None):
+    def __init__(self, train, target, error_func, pred_type, history_root,trial=10, model_confs=None):
         self.train = train.values if isinstance(train, pd.DataFrame) else train
         self.target = target 
         if isinstance(target, pd.DataFrame) or isinstance(target, pd.Series):
@@ -119,7 +119,7 @@ class HyperEnsamble:
         self.error_func = error_func
         self.trial = trial
         self.pred_type = pred_type
-        self.mh = ModelHistory()
+        self.mh = ModelHistory(history_root)
         self.train_hash, self.target_hash = self.mh.cacl_pd_hash(train, self.target)
         self.mh.may_store_feature(train, self.train_hash)
         #TODO need to consider shuffle for time
@@ -194,8 +194,19 @@ class HyperEnsamble:
             print(self.model_confs[mid].name, self.best_meta_model.coef_[i])
         return best_loss
     
-    # def find_bigensamble():
-    #     model_list = self.mh.get_all_model()
+    def find_bigensamble(trial):
+        model_list = self.mh.get_all_model()
+        param_space = {model_path:hp.choice(model_path, [True, False]) for model_path in model_list}
+        best_bigensamble = float("inf"), {}
+        def score(param):
+            nonlocal best_bigensamble
+            # each model's predictions are feature for stacking model
+            features = np.column_stack([self.mh.load_past_model_cv() for model_path, use in param.items() if use])
+            result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target,load=False)
+            best_bigensamble = min((result["loss"], param), best_bigensamble, key=lambda x:x[0])
+        fmin(score, param_space, algo=tpe.suggest, trials=Trials(), max_evals=trial)
+        loss, param = best_bigensamble
+        print("###best big ensamble loss: ", loss)
     
     def predict(self, x):
         best_model_prediction = np.column_stack([model.predict(x.values) for i, model in enumerate(self.best_models)])
@@ -204,13 +215,13 @@ class HyperEnsamble:
 import pickle
 import hashlib
 class ModelHistory:
-    path_root = "model_history"
-    path_feature = path_root + "/features"
-    path_model = path_root + "/models"
-    path_exec_record = path_root + "/exec_records"
     base = 10**9 + 7
 
-    def __init__(self):
+    def __init__(self, history_root):
+        self.path_root = history_root
+        self.path_feature = self.path_root + "/features"
+        self.path_model = self.path_root + "/models"
+        self.path_exec_record = self.path_root + "/exec_records"
         for path in [self.path_feature, self.path_model, self.path_exec_record]:
             if not os.path.exists(path):
                 os.makedirs(path)
@@ -249,7 +260,7 @@ class ModelHistory:
         return model_path
 
     def get_all_model(self):
-        return [os.path.abspath(p) for p in glob.glob(self.path_model)]
+        return [os.path.abspath(p) for p in glob.glob(self.path_model + "/*")]
 
 def myhash(s):
     if type(s) == str:
