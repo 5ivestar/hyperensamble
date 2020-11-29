@@ -107,8 +107,11 @@ class LinearRegressionConf(ModelConf):
         return LinearRegression(normalize=True)
 
 class HyperEnsamble:
-    def __init__(self, train, target, error_func, pred_type, history_root,trial=10, model_confs=None):
-        self.train = train.values if isinstance(train, pd.DataFrame) else train
+    def __init__(self, df, target, error_func, pred_type, history_root,trial=10, model_confs=None):
+        npdf = df.values if isinstance(df, pd.DataFrame) else df
+        train = df[:len(target)]
+        self.train = npdf[:len(target)]
+        self.test = npdf[len(target):]
         self.target = target 
         if isinstance(target, pd.DataFrame) or isinstance(target, pd.Series):
             self.target = self.target.values
@@ -125,13 +128,13 @@ class HyperEnsamble:
         #TODO need to consider shuffle for time
         self.train, self.target = sklearn.utils.shuffle(self.train, self.target, random_state=41)
 
-    def cvtrain(self, params, model_conf, history, x, y, load=True):
+    def cvtrain(self, params, model_conf, history, x, y, load=True, return_model=False):
         model = model_conf.instance(params)
         kf=KFold(n_splits=2)
         errors=[]
         train_results=[]
         predictions = self.mh.load_past_model_cv(self.train_hash, params, model_conf.name) if load else None
-        if predictions is None:
+        if predictions is None: 
             predictions = []
             for tr_idx,va_idx in kf.split(x):
                 tr_x, va_x = x[tr_idx], x[va_idx]
@@ -142,10 +145,13 @@ class HyperEnsamble:
                 #print(self.error_func(tr_y,model.predict(tr_x)))
                 #print(self.error_func(va_y,prediction))
             predictions = np.hstack(predictions)
-            self.mh.may_save_model_cv(self.train_hash, params, model_conf.name, predictions)
+            model.fit(x,y)
+            if load:
+                test_prediction = model.predict(self.test)
+                self.mh.save_model_predict(self.train_hash, params, model_conf.name, predictions, test_prediction)
         error = self.error_func(y, predictions)
         history.append((error, params, predictions))
-        return {"loss":error,"status": STATUS_OK}
+        return {"loss":error,"status": STATUS_OK} if not return_model else ({"loss":error,"status": STATUS_OK}, model)
         
     def find_best_models(self):
         self.best_model_params = []
@@ -167,14 +173,14 @@ class HyperEnsamble:
             self.best_model_predictions.append(predictions)
             self.best_model_params.append(best_param)
     
-    def find_best_ensamble(self):
+    def find_best_session_ensamble(self):
         history = []
         num_models = len(self.best_model_params)
         best_meta_model = float("inf"), -1
         meta_model_conf = LogisticConf
         for i in range(2**num_models + 1, 2**(num_models+1)):
             selected = np.column_stack([self.best_model_predictions[mid] for mid in range(num_models) if bin(i)[2:][mid] == "1"])
-            result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target,load=False)
+            result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target, load=False)
             best_meta_model = min((result["loss"], i), best_meta_model) 
         best_loss, selected_bit = best_meta_model
         print("###best stacking model loss: ", best_loss)
@@ -189,25 +195,30 @@ class HyperEnsamble:
             best_model = self.model_confs[mid](self.pred_type).instance(self.best_model_params[mid])
             best_model.fit(self.train, self.target)
             self.best_models.append(best_model)
-        print("###ensamble weight")
+        print("###session ensamble weight")
         for i,mid in enumerate(sorted(self.selected_model_id)):
             print(self.model_confs[mid].name, self.best_meta_model.coef_[i])
         return best_loss
     
-    def find_bigensamble(trial):
+    def find_bigensamble(self, trial):
         model_list = self.mh.get_all_model()
         param_space = {model_path:hp.choice(model_path, [True, False]) for model_path in model_list}
-        best_bigensamble = float("inf"), {}
+        best_bigensamble = float("inf"), {}, None
         def score(param):
             nonlocal best_bigensamble
             # each model's predictions are feature for stacking model
-            features = np.column_stack([self.mh.load_past_model_cv() for model_path, use in param.items() if use])
-            result = self.cvtrain({}, LogisticConf(self.pred_type), history, selected, self.target,load=False)
-            best_bigensamble = min((result["loss"], param), best_bigensamble, key=lambda x:x[0])
+            features = np.column_stack([self.mh.load_model_cv(model_path) for model_path, use in param.items() if use])
+            result, model = self.cvtrain({}, LogisticConf(self.pred_type), [], features, self.target, load=False, return_model=True)
+            best_bigensamble = min((result["loss"], param, model), best_bigensamble, key=lambda x:x[0])
+            return result
         fmin(score, param_space, algo=tpe.suggest, trials=Trials(), max_evals=trial)
-        loss, param = best_bigensamble
+        loss, param, model = best_bigensamble
         print("###best big ensamble loss: ", loss)
-    
+
+        # lastly,  return test_prediction
+        test_features = np.column_stack([self.mh.load_model_test_prediction(model_path) for model_path, use in param.items() if use])
+        return model.predict(test_features)
+
     def predict(self, x):
         best_model_prediction = np.column_stack([model.predict(x.values) for i, model in enumerate(self.best_models)])
         return self.best_meta_model.predict(best_model_prediction)
@@ -242,17 +253,19 @@ class ModelHistory:
             return np.load(model_path + "/cv_result.npy")
         return None
 
-    def load_past_model_object(self,model_path):
-        if os.path.exists(model_path):
-            return pickle.load(model_path + "/model_object")
-        return None
+    def load_model_cv(self, model_path):
+        return np.load(model_path + "/cv_result.npy")
+
+    def load_model_test_prediction(self, model_path):
+        return np.load(model_path + "/test_prediction.npy")
     
-    def may_save_model_cv(self, train_hash, params, model_name, cv_result):
+    def save_model_predict(self, train_hash, params, model_name, cv_result, test_prediction):
         model_path = self.get_model_path(train_hash, params, model_name)
         if os.path.exists(model_path):
             return
         os.makedirs(model_path)
-        np.save(model_path + "/cv_result",cv_result)
+        np.save(model_path + "/cv_result", cv_result)
+        np.save(model_path + "/test_prediction", test_prediction)
 
     def get_model_path(self, train_hash, params, model_name):
         param_hash = str(myhash(params))
