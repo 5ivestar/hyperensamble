@@ -29,7 +29,7 @@ def test_titanic(test_dir="test_history"):
     he.find_best_models()
     assert he.find_best_session_ensamble() < -0.76
     validation_error = accuracy_error_func(target[TRAIN:],he.predict(train[TRAIN:]))
-    print("final validation:",validation_error)
+    print("\nfinal validation:",validation_error)
     assert validation_error < -0.76
     
     # testing saved models
@@ -52,6 +52,7 @@ def test_titanic(test_dir="test_history"):
     prediction = he.find_bigensamble(10)
     validation_error = accuracy_error_func(target[TRAIN:], prediction)
     assert validation_error < -0.76
+    print("\nbigensamble validation", validation_error)
 
 if __name__=="__main__":
-    test_titanic(test_dir="test_directory")
+    test_titanic(test_dir="test_history")

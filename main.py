@@ -208,12 +208,14 @@ class HyperEnsamble:
             nonlocal best_bigensamble
             # each model's predictions are feature for stacking model
             features = np.column_stack([self.mh.load_model_cv(model_path) for model_path, use in param.items() if use])
-            result, model = self.cvtrain({}, LogisticConf(self.pred_type), [], features, self.target, load=False, return_model=True)
+            result, model = self.cvtrain({}, LinearRegressionConf(self.pred_type), [], features, self.target, load=False, return_model=True)
             best_bigensamble = min((result["loss"], param, model), best_bigensamble, key=lambda x:x[0])
             return result
         fmin(score, param_space, algo=tpe.suggest, trials=Trials(), max_evals=trial)
         loss, param, model = best_bigensamble
         print("###best big ensamble loss: ", loss)
+        for i, model_path in enumerate(model_path for model_path, use in param.items() if use):
+            print(model_path.split("/")[-1], "\t", model.coef_[i])
 
         # lastly,  return test_prediction
         test_features = np.column_stack([self.mh.load_model_test_prediction(model_path) for model_path, use in param.items() if use])
